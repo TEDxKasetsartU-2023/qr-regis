@@ -1,79 +1,38 @@
 # read QR Code and transform to specific format
 # | IMPORT SECTIONq
+from queue import Empty
 import cv2
 import numpy as np
 
+from multiprocessing import Process, Queue
 from pyzbar.pyzbar import decode
-from threading import Thread
-
-# from queue import Empty, Queue
-
-# | GLOBAL VARIABLES
-RUN = True
-
-# | CLASS SECTION
-class Queue:
-    def __init__(self, size=float("inf")) -> None:
-        self.size = size
-        self.data = []
-        self.Full = False
-        self.Empty = True
-
-    def put(self, val):
-        if len(self.data) < self.size:
-            self.data.append(val)
-            if len(self.data) == self.size:
-                self.Full = True
-            if self.Empty:
-                self.Empty = False
-        else:
-            raise Queue.FULL
-
-    def get(self):
-        if len(self.data) != 0:
-            val = self.data.pop()
-            if len(self.data) == 0:
-                self.Empty = True
-            if self.Full:
-                self.Full = False
-            return val
-        else:
-            raise Queue.EMPTY
-
-    class FULL(Exception):
-        pass
-
-    class EMPTY(Exception):
-        pass
 
 
 # | FUNCTION SECTION
 def output(q):
-    global RUN
     while True:
         try:
-            frame = q.get()
-        except Queue.EMPTY:
+            frame = q.get_nowait()
+        except Empty:
             continue
 
         cv2.imshow("Main", frame)
         key = cv2.waitKey(1)
 
         if key == ord("q"):
-            RUN = False
             break
 
 
 # | MAIN SECTION
 if __name__ == "__main__":
     q = Queue()
-    out_thread = Thread(target=output, args=(q,))
+    out_proc = Process(target=output, args=(q,))
 
     cam_no = input("Cam #: ")
     cap = cv2.VideoCapture(cam_no if cam_no != "" else 0)
 
-    out_thread.start()
-    while RUN:
+    out_proc.start()
+    while True:
         # * get image from camera
         ret, frame = cap.read()
         frame = cv2.resize(frame, (0, 0), fx=0.75, fy=0.75)
@@ -98,7 +57,10 @@ if __name__ == "__main__":
         if ret:
             # * output
             res = np.vstack((frame, gray))
-            q.put(res)
+            q.put_nowait(res)
+        
+        if not out_proc.is_alive():
+            break
 
-out_thread.join()
-cv2.destroyAllWindows()
+    # out_proc.join()
+    cv2.destroyAllWindows()
