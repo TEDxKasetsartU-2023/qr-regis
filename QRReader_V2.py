@@ -1,6 +1,7 @@
 # read QR Code and transform to specific format
 # | IMPORT SECTION
-from queue import Empty, Full
+import base64
+from queue import Empty
 import cv2
 import numpy as np
 
@@ -9,33 +10,42 @@ from pyzbar.pyzbar import decode
 
 
 # | FUNCTION SECTION
-def output(q: Queue) -> None:
-    while True:
+def update(q: Queue) -> None:
+    RUN = True
+    
+    while RUN:
         try:
-            frame = q.get_nowait()
+            RUN = status_q.get_nowait()
+        except Empty:
+            pass
+
+        try:
+            data = q.get_nowait()
         except Empty:
             continue
 
-        cv2.imshow("Main", frame)
-        key = cv2.waitKey(1)
-
-        if key == ord("q"):
-            break
+        # do something
 
     print("output exit")
 
 
+def decode_code(data):
+    res = base64.b64decode(data)
+    return res.split("|")
+
+
 # | MAIN SECTION
 if __name__ == "__main__":
-    q = Queue(2)
-    out_proc = Process(target=output, args=(q,))
+    q = Queue()
+    status_q = Queue(1)
+    update_proc = Process(target=update, args=(q, status_q))
 
     cam_no = input("Cam #: ")
     cap = cv2.VideoCapture(0 if cam_no == "" else cam_no)
 
     ret, frame = cap.read()
 
-    out_proc.start()
+    update_proc.start()
     while True:
         # * get image from camera
         ret, frame = cap.read()
@@ -63,20 +73,22 @@ if __name__ == "__main__":
 
             # * output
             res = np.vstack((frame, gray))
-            try:
-                q.put_nowait(res)
-            except Full:
-                print("queue full")
-                continue
+            cv2.imshow("Main", res)
+            key = cv2.waitKey(1)
+
+            q.put_nowait(decode_code(barcode.data.decode("utf-8")))
+
+            if key == ord("q"):
+                break
         else:
             print("do not receive the frame")
 
-        if not out_proc.is_alive():
-            break
-
-    out_proc.join()
+    status_q.put_nowait(False)
+    update_proc.join()
     cv2.destroyAllWindows()
     cap.release()
     q.close()
     q.cancel_join_thread()
+    status_q.close()
+    status_q.cancel_join_thread()
     print("main exit")

@@ -36,4 +36,4 @@ def html_parse(html_filename: str, pattern: str, variable_dct: Dict[str, str]) -
 
 # | MAIN SECTION
 if __name__ == "__main__":
-    print(html_parse("./content.html", "{{\w*}}", {"NAME": "Ratchapol Chantarachote", "REF": "123456789"}))
+    print(html_parse("./mail.html", "{{\w*}}", {"name": "NAME", "code": "CODE"}))

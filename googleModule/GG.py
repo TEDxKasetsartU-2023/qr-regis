@@ -35,7 +35,7 @@ class sheet_management:
         return sheet.values().get(spreadsheetId=self.sheet_id, range=_range).execute()
 
     def write_sheet_by_range(
-        self, _range: str, content: List[str], input_mode: str = "RAW"
+        self, _range: str, content: List[List[str]], input_mode: str = "RAW"
     ):
         sheet = self.service.spreadsheets()
         return (
@@ -57,7 +57,7 @@ class gmail_management:
     def build_service(self, creds):
         return build("gmail", "v1", credentials=creds)
 
-    def create_message(self, receiver, subject, text, file):
+    def create_message(self, receiver, subject, text, files):
         message = MIMEMultipart()
         message["to"] = receiver
         message["subject"] = subject
@@ -65,28 +65,26 @@ class gmail_management:
         msg = MIMEText(text, "html")
         message.attach(msg)
 
-        if file is not None:
-            content_type, encoding = mimetypes.guess_type(file)
-            if content_type is None or encoding is not None:
-                content_type = "application/octet-stream"
-            main_type, sub_type = content_type.split("/", 1)
-            if main_type == "image":
-                with open(file, "rb") as fp:
-                    msg = MIMEImage(fp.read(), _subtype=sub_type)
+        if files is not None:
+            for file in files:
+                file = os.path.abspath(os.path.join(".", file))
+                content_type, encoding = mimetypes.guess_type(file)
+                if content_type is None or encoding is not None:
+                    content_type = "application/octet-stream"
+                main_type, sub_type = content_type.split("/", 1)
+                if main_type == "image":
+                    with open(file, "rb") as fp:
+                        msg = MIMEImage(fp.read(), _subtype=sub_type)
 
-            filename = os.path.basename(file)
-            msg.add_header("Content-Id", f"<qr>")
-            msg.add_header("Content-Disposition", "inline", filename=filename)
-            message.attach(msg)
+                filename = os.path.basename(file)
+                msg.add_header("Content-Id", f"<{os.path.split(file)[1]}>")
+                msg.add_header("Content-Disposition", "inline", filename=filename)
+                message.attach(msg)
 
         return {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}
 
-    def send_mail(self, to: str, subject: str, qr: str, ref: str, name: str) -> None:
-        r_msg = parseHTML(
-            os.path.abspath(os.path.join(".", "content.html")),
-            {"REF": ref, "NAME": name},
-        )
-        content = self.create_message(to, subject, r_msg, qr)
+    def send_mail(self, to: str, subject: str, html_content: str, files: List[str]) -> None:
+        content = self.create_message(to, subject, html_content, files)
         try:
             res = (
                 self.service.users()
@@ -101,23 +99,6 @@ class gmail_management:
 
 
 # | FUNCTIONS
-def parseHTML(file: str, param: Dict[str, str]) -> str:
-    lines = []
-    _open = "{{"
-    _close = "}}"
-    with open(file, "rt", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    for index in range(len(lines.copy())):
-        line = lines[index]
-        if _open in line and _close in line:
-            cut_open = [c for c in line.split(_open) if c != ""][1]
-            cut_close = [c for c in cut_open.split(_close) if c != ""][0]
-            lines[index] = line.replace(f"{_open}{cut_close}{_close}", param[cut_close])
-
-    return "\n".join([l.strip("\n") for l in lines])
-
-
 def init_creds(
     gmail_creds_file_path: str,
     sheet_service_acc_file_path: str,

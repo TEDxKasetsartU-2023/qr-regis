@@ -130,9 +130,11 @@ dmypy.json
 
 # Custom
 *.jpg
+*.png
 .vscode
 old/
 credentials.json
 key.json
 token.pickle
 *.html
+*.txt
