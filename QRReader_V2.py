@@ -1,18 +1,29 @@
 # read QR Code and transform to specific format
 # | IMPORT SECTION
 import base64
-from queue import Empty
 import cv2
+import datetime
 import numpy as np
+import os
+import sys
 
+from google.oauth2 import service_account
 from multiprocessing import Process, Queue
 from pyzbar.pyzbar import decode
+from queue import Empty
+
+from ConfigFile import Config
+from googleModule.GG import sheet_management
+
+# | GLOBAL VARIABLE
+c = Config()
+c.fromFile("sheet.cfg")
 
 
 # | FUNCTION SECTION
-def update(q: Queue) -> None:
+def sheet_proc(q: Queue, status_q: Queue) -> None:
     RUN = True
-    
+
     while RUN:
         try:
             RUN = status_q.get_nowait()
@@ -30,22 +41,30 @@ def update(q: Queue) -> None:
 
 
 def decode_code(data):
-    res = base64.b64decode(data)
-    return res.split("|")
+    res = base64.b64decode(data.decode("utf-8"))
+    return res.decode("utf-8").split("|")
 
 
 # | MAIN SECTION
 if __name__ == "__main__":
-    q = Queue()
-    status_q = Queue(1)
-    update_proc = Process(target=update, args=(q, status_q))
-
     cam_no = input("Cam #: ")
     cap = cv2.VideoCapture(0 if cam_no == "" else cam_no)
 
     ret, frame = cap.read()
 
-    update_proc.start()
+    SHEET_SCOPES = [c["Google Api"]["SHEET_SCOPE"]]
+    SERVICE_ACCOUNT_FILE = os.path.join(
+        os.path.split(sys.argv[0])[0], c["Google Api"]["SHEET_SERVICE_ACC_FILE"]
+    )
+
+    SHEET_CREDS = None
+    SHEET_CREDS = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SHEET_SCOPES
+    )
+
+    sheet_id = c["Global"]["SHEET_ID"]
+
+    s = sheet_management(sheet_id, SHEET_CREDS)
     while True:
         # * get image from camera
         ret, frame = cap.read()
@@ -69,26 +88,49 @@ if __name__ == "__main__":
                     )
                     cv2.polylines(frame, [points], 1, (255, 0, 0), 5)
 
-                    print(barcode.data.decode("utf-8"))
+                    dec_data = decode_code(barcode.data)
+                    sheet_code_col = s.read_sheet_by_range(
+                        f"{c['Global']['SHEET_NAME']}!{chr(ord('A') + len(c['Global']['CRITERIA_COL'])+1)}:{chr(ord('A') + len(c['Global']['CRITERIA_COL'])+1)}"
+                    )
+                    sheet_regis_col = s.read_sheet_by_range(
+                        f"{c['Global']['SHEET_NAME']}!{chr(ord('A') + len(c['Global']['CRITERIA_COL'])+2)}:{chr(ord('A') + len(c['Global']['CRITERIA_COL'])+2)}"
+                    )
+                    not_found = True
+                    for row_index, row in enumerate(sheet_code_col["values"]):
+                        if row[0] == dec_data[-1]:
+                            if len(sheet_regis_col["values"]) != 1 and sheet_regis_col["values"][row_index][0] == "TRUE":
+                                not_found = False
+                                print("already regis")
+                                break
+
+                            s.write_sheet_by_range(
+                                f"{c['Global']['SHEET_NAME']}!{chr(ord('A') + len(c['Global']['CRITERIA_COL'])+2)}{row_index+1}",
+                                [["=TRUE"]],
+                                "USER_ENTERED",
+                            )
+                            s.write_sheet_by_range(
+                                f"{c['Global']['SHEET_NAME']}!{chr(ord('A') + len(c['Global']['CRITERIA_COL'])+3)}{row_index+1}",
+                                [
+                                    [
+                                        f"{datetime.datetime.now().strftime('%d/%m/%Y, %H:%M:%S')}",
+                                    ]
+                                ],
+                                "USER_ENTERED",
+                            )
+                            print(f"{' '.join(dec_data)} status updated")
+                            not_found = False
+                            break
+                    if not_found:
+                        print("do not found\nplease check the google sheet")
 
             # * output
             res = np.vstack((frame, gray))
             cv2.imshow("Main", res)
             key = cv2.waitKey(1)
 
-            q.put_nowait(decode_code(barcode.data.decode("utf-8")))
-
             if key == ord("q"):
                 break
         else:
             print("do not receive the frame")
 
-    status_q.put_nowait(False)
-    update_proc.join()
-    cv2.destroyAllWindows()
-    cap.release()
-    q.close()
-    q.cancel_join_thread()
-    status_q.close()
-    status_q.cancel_join_thread()
     print("main exit")

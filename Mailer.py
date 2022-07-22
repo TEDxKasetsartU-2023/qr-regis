@@ -95,13 +95,6 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str) -> None:
 
         val_data_formatter_data_map = c["Checker"]["FORMATTER_DATA_MAP"]
         for k, v in val_data_formatter_data_map.copy().items():
-            try:
-                run = status_q.get_nowait()
-            except Empty:
-                pass
-            else:
-                if not run:
-                    break
             val_data_formatter_data_map[k] = c["Checker"][v]
 
         val = data_formatter(
@@ -304,7 +297,7 @@ if __name__ == "__main__":
             c["Mail"]["HTML_ATTCH_FILE"],
         )
         print(f"Result:\n{res}\nWaiting 0.5 s")
-        time.sleep(0.5)
+        time.sleep(1)
 
         # * update status in google sheet (mail sent and code status)
         s.write_sheet_by_range(
@@ -312,8 +305,7 @@ if __name__ == "__main__":
             [["=TRUE", uuid_code]],
             "USER_ENTERED",
         )
-        print("Sheet status updated\nWaiting 0.5 s")
-        time.sleep(0.5)
+        print("Sheet status updated")
 
     # * terminate checker process
     print("Closing checker process")
