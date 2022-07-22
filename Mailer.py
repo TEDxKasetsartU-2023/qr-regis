@@ -3,10 +3,10 @@
 
 # ## todolist (last update 20220721-1239)
 # #- todo - checker
-# todo 1. make sure that checker won't send same mail to mail queue again
-# todo 2. make data formatter read condition and data mapping from file instead of hardcode
+# -todo 1. make sure that checker won't send same mail to mail queue again
+# - todo 2. make data formatter read condition and data mapping from file instead of hardcode
 # #- todo - All
-# todo 1. make main config file
+# - todo 1. make main config file
 
 # | IMPORT SECTION
 import base64
@@ -16,6 +16,7 @@ import shortuuid
 import sys
 import time
 
+from datetime import datetime, timedelta
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,21 +24,21 @@ from multiprocessing import Process, Queue
 from typing import Any, Dict, List, Union
 from queue import Empty, Full
 
+from ConfigFile import Config
 from googleModule.GG import sheet_management, gmail_management
 from HTMLParse import html_parse
 from QR import create_qr_code
 
 # | GLOBAL DEFINE
-SHEET_NAME = "Mailer" # main sheet name for reading and writing status
+c = Config()
+c.fromFile("sheet.cfg")
 
-STATUS_COL = ["Send", "Code", "Regis", "Arrival Time"] # status column that this program needed
+SHEET_NAME = c["Global"]["SHEET_NAME"]  # main sheet name for reading and writing status
+
+STATUS_COL = c["Global"]["STATUS_COL"]  # status column that this program needed
 
 # read criteria column from file
-with open("criteria_col.txt", "rt", encoding="utf-8") as file:
-    CRITERIA_STRUCT = [
-        [i.strip() for i in line.strip().split(":")] for line in file.readlines()
-    ]
-    CRITERIA_COL = [i for _, i in CRITERIA_STRUCT]
+CRITERIA_COL = c["Global"]["CRITERIA_COL"]
 
 # set up range for google sheet reading and writing
 RANGE_LST = [chr(ord("A") + i) for i in range(len(STATUS_COL) + len(CRITERIA_COL))]
@@ -45,7 +46,7 @@ RANGE = f"{SHEET_NAME}!{RANGE_LST[0]}:{RANGE_LST[-1]}"
 
 
 # | FUNCTION SECTION
-def checker(mail_q: Queue, status_q: Queue, sheet_id: str):
+def checker(mail_q: Queue, status_q: Queue, sheet_id: str) -> None:
     """
     The checker process is used to check the submissions from google sheet and send needed information to main process to send an email.
 
@@ -59,9 +60,9 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str):
         The google sheet id that have the Mailer sheet.
     """
     # * setup google sheet api
-    SHEET_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+    SHEET_SCOPES = [c["Google Api"]["SHEET_SCOPE"]]
     SERVICE_ACCOUNT_FILE = os.path.join(
-        os.path.split(sys.argv[0])[0], "googleModule\key.json"
+        os.path.split(sys.argv[0])[0], c["Google Api"]["SHEET_SERVICE_ACC_FILE"]
     )
 
     SHEET_CREDS = None
@@ -69,6 +70,9 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str):
         SERVICE_ACCOUNT_FILE, scopes=SHEET_SCOPES
     )
     s = sheet_management(sheet_id, SHEET_CREDS)
+
+    # * mail sending wait list
+    waiting_lst = []
 
     # * Main loop
     run = True
@@ -78,6 +82,9 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str):
             run = status_q.get_nowait()
         except Empty:
             pass
+        else:
+            if not run:
+                break
 
         # * read all data from google sheet
         data = s.read_sheet_by_range(RANGE)
@@ -85,19 +92,28 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str):
 
         # * data formatting
         val = [line + [""] * (len(RANGE_LST) - len(line)) for line in data["values"]]
+
+        val_data_formatter_data_map = c["Checker"]["FORMATTER_DATA_MAP"]
+        for k, v in val_data_formatter_data_map.copy().items():
+            try:
+                run = status_q.get_nowait()
+            except Empty:
+                pass
+            else:
+                if not run:
+                    break
+            val_data_formatter_data_map[k] = c["Checker"][v]
+
         val = data_formatter(
             val,
-            {"ท่านทำการสมัครเพื่อจุดประสงค์ใด": "ผู้พูดบนเวที Call for Speaker"},
-            {
-                "2. ข้าพเจ้ายินยอมให้นำเนื้อหาที่ใช้ประกอบการพูด, รูปภาพ, เสียง เเละวิดีโอที่มีภาพเเละ/หรือเสียงของท่าน ทั้งที่ระบุในแบบสอบถาม และเกิดขึ้นในกิจกรรม Call for Speaker 2022 (23 ก.ค. 2565) เพื่อจัดทำสื่อประชาสัมพันธ์ผ่านช่องทางโซเชียลมีเดียของ TEDxKasetsartU": {
-                    "ข้าพเจ้ายินยอม": "AV-PDPA-OK",
-                    "ข้าพเจ้าไม่ยินยอม": "AV-PDPA-NOT-OK",
-                }
-            },
+            c["Checker"]["FORMATTER_IGN_COND"],
+            val_data_formatter_data_map,
         )
 
         # * mail sending loop
-        for i, line in enumerate(val):
+        for line in val:
+            i = line[0]
+            line = line[1:]
             # * check terminate status while working (avoid the program not closing while sending mail information)
             try:
                 run = status_q.get_nowait()
@@ -109,7 +125,24 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str):
 
             # * send mail information to main process through the queue
             if line[len(CRITERIA_COL)] == "":
+                for wait_mail in waiting_lst.copy():
+                    try:
+                        run = status_q.get_nowait()
+                    except Empty:
+                        pass
+                    else:
+                        if not run:
+                            break
+
+                    if wait_mail[0] == i and datetime.now() - wait_mail[1] >= timedelta(
+                        minutes=5
+                    ):
+                        waiting_lst[1] = datetime.now()
+                        mail_q.put_nowait("|".join([str(i)] + line))
+
+                waiting_lst.append([i, datetime.now()])
                 mail_q.put_nowait("|".join([str(i)] + line))
+    print("Checker process exited")
 
 
 def data_formatter(
@@ -137,7 +170,7 @@ def data_formatter(
 
     res = []
     first = True
-    for line in data:
+    for i, line in enumerate(data):
         if not first:
             ignore = False
             for col, val in ignore_cond.items():
@@ -151,7 +184,7 @@ def data_formatter(
             for col, val in val_map.items():
                 line[CRITERIA_COL.index(col)] = val[line[CRITERIA_COL.index(col)]]
 
-        res.append(line)
+        res.append([i] + line)
 
         if first:
             first = False
@@ -164,13 +197,12 @@ if __name__ == "__main__":
     # * set terminate timer
     START = time.perf_counter()
 
-    # * read sheet id from file
-    with open("sheet_id.txt", "rt", encoding="utf-8") as file:
-        sheet_id = file.read().strip()
+    # * get sheet id
+    sheet_id = c["Global"]["SHEET_ID"]
 
     # * setup queue for inter-process communication
     mail_q = Queue()
-    status_q = Queue(1)
+    status_q = Queue()
 
     # * setup checker process for reading google sheet
     checker_proc = Process(target=checker, args=(mail_q, status_q, sheet_id))
@@ -179,9 +211,9 @@ if __name__ == "__main__":
     checker_proc.start()
 
     # * setup google sheet api
-    SHEET_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+    SHEET_SCOPES = [c["Google Api"]["SHEET_SCOPE"]]
     SERVICE_ACCOUNT_FILE = os.path.join(
-        os.path.split(sys.argv[0])[0], "googleModule\key.json"
+        os.path.split(sys.argv[0])[0], c["Google Api"]["SHEET_SERVICE_ACC_FILE"]
     )
 
     SHEET_CREDS = None
@@ -191,12 +223,14 @@ if __name__ == "__main__":
     s = sheet_management(sheet_id, SHEET_CREDS)
 
     # * setup gmail api
-    GMAIL_SCOPES = ["https://mail.google.com/"]
+    GMAIL_SCOPES = [c["Google Api"]["GMAIL_SCOPE"]]
 
     CREDENTIALS_FILENAME = os.path.join(
-        os.path.split(sys.argv[0])[0], "googleModule\credentials.json"
+        os.path.split(sys.argv[0])[0], c["Google Api"]["GMAIL_CRED_FILE"]
     )
-    TOKEN_FILENAME = os.path.join(os.path.split(sys.argv[0])[0], "token.pickle")
+    TOKEN_FILENAME = os.path.join(
+        os.path.split(sys.argv[0])[0], c["Google Api"]["GMAIL_TOKEN_FILE"]
+    )
 
     GMAIL_CREDS = None
     if os.path.exists(TOKEN_FILENAME):
@@ -219,7 +253,7 @@ if __name__ == "__main__":
     # * main program
     while True:
         # * Terminate Case
-        if time.perf_counter() - START >= 0.25 * 60:
+        if time.perf_counter() - START >= float(c["Global"]["PROGRAM_RUN_TIMER"]) * 60:
             print("Main process close by timer")
             break
 
@@ -227,51 +261,54 @@ if __name__ == "__main__":
         try:
             mail = mail_q.get_nowait()
             mail = mail.split("|")
-            row_index = mail[0]
+            row_index = int(mail[0])
             mail = mail[1:]
         except Empty:
             continue
 
         # * prepare for mail sending
-        for i, line in enumerate(CRITERIA_STRUCT):
-            if line[0] == "MAIL":
-                MAIL = i
-
-            if line[0] == "FNAME":
-                FNAME = i
-
-            if line[0] == "NNAME":
-                NNAME = i
+        for k, v in c["Global"]["CRITERIA"].items():
+            exec(f"{k} = CRITERIA_COL.index('{v}')")
 
         # * generate code and qr code image
         uuid_code = shortuuid.uuid()
-        img = create_qr_code(
-            data=base64.b64encode(
-                f"{mail[MAIL]}|{mail[FNAME]}|{mail[NNAME]}|{uuid_code}".encode("utf-8")
-            )
-        )
-        img.save("qr.jpg")
+        qr_data = []
+
+        for content in c["Mail"]["QR_CONTENT_PATTERN"]:
+            if content == "uuid_code":
+                qr_data.append(globals()[content])
+            else:
+                qr_data.append(mail[globals()[content]])
+
+        img = create_qr_code(data=base64.b64encode("|".join(qr_data).encode("utf-8")))
+        img.save(c["Mail"]["QR_IMAGE_FNAME"])
 
         # * send mail
+        replace_var = {}
+        for k, v in c["Mail"]["HTML_REPLACE_VAR"].items():
+            if v == "uuid_code":
+                replace_var[k] = globals()[v]
+            else:
+                replace_var[k] = mail[globals()[v]]
+
         res = g.send_mail(
-            "r.chantarachote@gmail.com",  # mail[MAIL],
+            mail[globals()[c["Mail"]["ADDRESSEE"]]]
+            if "@" not in c["Mail"]["ADDRESSEE"]
+            else c["Mail"]["ADDRESSEE"],
             "อีเมลตอบกลับการลงทะเบียนงาน Call for Speaker",
             html_parse(
-                "./mail.html", "{{\w*}}", {"name": mail[NNAME], "code": uuid_code}
+                c["Mail"]["HTML_MAIL_TEMPLATE"],
+                c["Mail"]["HTML_REPLACE_PATTERN"],
+                replace_var,
             ),
-            [
-                "./qr.jpg",
-                "./logo_bluo.png",
-                "./tight_TEDxKasetsartU_Logo.png",
-                "./c4s_map.jpg",
-            ],
+            c["Mail"]["HTML_ATTCH_FILE"],
         )
         print(f"Result:\n{res}\nWaiting 0.5 s")
         time.sleep(0.5)
 
         # * update status in google sheet (mail sent and code status)
         s.write_sheet_by_range(
-            f"{SHEET_NAME}!{RANGE_LST[len(CRITERIA_COL)]}{row_index}:{RANGE_LST[len(CRITERIA_COL)]+1}{row_index}",
+            f"{SHEET_NAME}!{RANGE_LST[len(CRITERIA_COL)]}{row_index+1}:{chr(ord(RANGE_LST[len(CRITERIA_COL)])+1)}{row_index+1}",
             [["=TRUE", uuid_code]],
             "USER_ENTERED",
         )
@@ -279,13 +316,11 @@ if __name__ == "__main__":
         time.sleep(0.5)
 
     # * terminate checker process
+    print("Closing checker process")
     while checker_proc.is_alive():
-        print("Closing checker process")
-        try:
-            status_q.put_nowait(False)
-        except Full:
-            continue
-        time.sleep(0.5)
+        status_q.put_nowait(False)
+        checker_proc.kill()
+        time.sleep(1)
 
     # * before exit clean up
     checker_proc.join()
@@ -293,3 +328,4 @@ if __name__ == "__main__":
     mail_q.cancel_join_thread()
     status_q.close()
     status_q.cancel_join_thread()
+    print("All Exited!")

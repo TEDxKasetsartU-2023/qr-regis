@@ -2,8 +2,9 @@
 # | IMPORT SECTION
 import os
 
+from typing import Dict, List, Tuple, Union
+
 # | CLASS SECTION
-from typing import Dict
 
 
 class Config:
@@ -64,7 +65,9 @@ class Config:
         else:
             raise Config.SectionNameNotFound(f"'{section_name}' is not a section name.")
 
-    def pop_section(self, section_name: str) -> Dict[str, str]:
+    def pop_section(
+        self, section_name: str
+    ) -> Dict[str, Union[str, List[str], Dict[str, str]]]:
         if type(section_name) != str:
             raise TypeError(f"section_name must be string, got: {type(section_name)}")
 
@@ -83,7 +86,16 @@ class Config:
             for section in self.__section:
                 file.write(f"[{section}]\n")
                 for k, v in self.__data[section].items():
-                    file.write(f"{k}: {v}\n")
+                    if type(v) is str:
+                        file.write(f"{k}:\t{v}\n")
+                    elif type(v) is list:
+                        new_v = "\n".join([f"\t- {string}" + string for string in v])
+                        file.write(f"{k}:{new_v}\n")
+                    elif type(v) is dict:
+                        new_v = "\n".join([f"\t# {key}:\t{item}" for key, item in v.items()])
+                        file.write(f"{k}:{new_v}\n")
+                    else:
+                        raise TypeError(f"can't parse to file, supported data type: str, list and dict, got: {type(v)}")
                 file.write("\n")
 
     def fromFile(self, file_name: str):
@@ -93,28 +105,46 @@ class Config:
         section_tmp = []
         data_tmp = {}
 
-        in_section = False
-        section_dummy = ""
+        cur_section = ""
+        in_list = False
+        in_dict = False
         for line in data:
-            print(repr(line))
-            if (
-                line != "\n"
-                and line.strip()[0] == "["
-                and line.strip()[-1] == "]"
-                and not in_section
-            ):
-                in_section = True
-                section_dummy = line.strip()[1:-1]
-                section_tmp.append(section_dummy)
-                data_tmp[section_dummy] = {}
-            else:
-                if line == "\n":
-                    in_section = False
-                    continue
+            if line == "\n":
+                continue
+
+            if in_list:
+                if not line.strip().startswith("- "):
+                    in_list = False
                 else:
-                    data_tmp[section_dummy][line.strip().split(":")[0].strip()] = (
-                        line.strip().split(":")[1].strip()
-                    )
+                    data_tmp[cur_section][key].append(line.strip()[2:])
+                    continue
+            elif in_dict:
+                if not line.strip().startswith("# "):
+                    in_dict = False
+                else:
+                    k_val = line.strip()[2:].split(":")[0].strip()
+                    v_val = line.strip()[2:].split(":")[1].strip()
+                    data_tmp[cur_section][key][k_val] = v_val
+                    continue
+
+            if line.strip().startswith("[") and line.strip().endswith("]"):
+                cur_section = line.strip()[1:-1]
+                section_tmp.append(cur_section)
+                section_tmp.sort()
+                data_tmp[cur_section] = {}
+            else:
+                if ":" in line.strip():
+                    key, val = tuple(i.strip() for i in line.strip().split(":", maxsplit=1))
+                    if val.startswith("- "):
+                        data_tmp[cur_section][key] = [val[2:]]
+                        in_list = True
+                    elif val.startswith("# "):
+                        k_val = val[2:].split(":")[0].strip()
+                        v_val = val[2:].split(":")[1].strip()
+                        data_tmp[cur_section][key] = {k_val: v_val}
+                        in_dict = True
+                    else:
+                        data_tmp[cur_section][key] = val
 
         self.__data = data_tmp
         self.__section = sorted(section_tmp)
