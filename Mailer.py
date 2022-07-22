@@ -94,13 +94,14 @@ def checker(mail_q: Queue, status_q: Queue, sheet_id: str) -> None:
         val = [line + [""] * (len(RANGE_LST) - len(line)) for line in data["values"]]
 
         val_data_formatter_data_map = c["Checker"]["FORMATTER_DATA_MAP"]
-        for k, v in val_data_formatter_data_map.copy().items():
-            val_data_formatter_data_map[k] = c["Checker"][v]
+        new_val_data_formatter_data_map = {}
+        for k, v in val_data_formatter_data_map.items():
+            new_val_data_formatter_data_map[k] = c["Checker"][v]
 
         val = data_formatter(
             val,
             c["Checker"]["FORMATTER_IGN_COND"],
-            val_data_formatter_data_map,
+            new_val_data_formatter_data_map,
         )
 
         # * mail sending loop
